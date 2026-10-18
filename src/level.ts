@@ -1,117 +1,108 @@
-import type { Pair, Polygon, Ring } from './geometry';
+import type { Pair, Polygon } from './geometry';
+
+export const WORLD_WIDTH = 1280;
+export const WORLD_HEIGHT = 800;
+
+export interface Board {
+  /** The board as it lies at the start, overlapping the other board at the corner. */
+  shape: Polygon;
+  /** A point near the far end. After a cut, the piece holding it stays. */
+  anchor: Pair;
+  /** Unit vector pointing along the wall, away from the corner. */
+  along: Pair;
+  width: number;
+}
 
 export interface Level {
   name: string;
-  /** The board at the top. It never moves and can't be cut. */
-  fixed: Polygon;
-  /** The board the player cuts. It slides up into the fixed board. */
-  moving: Polygon;
-  /** The point that marks which piece of the moving board stays after a cut. */
-  anchor: Pair;
-  x0: number;
-  x1: number;
+  boards: [Board, Board];
+  /** The piece of furniture the boards are fitted around. */
+  cabinet: Polygon;
+  /** Where the two inner edges meet (the cabinet corner)... */
+  innerCorner: Pair;
+  /** ...and where the two outer edges meet. The perfect cut runs between them. */
+  outerCorner: Pair;
   maxCuts: number;
-  /** Lowest fit percentage that earns 3, 2 and 1 stars. */
+  /** Largest average gap (in world units) that still earns 3, 2 and 1 stars. */
   thresholds: readonly [number, number, number];
-  /** Cuts that make the boards fit perfectly. */
-  solution: readonly [Pair, Pair][];
-  /** How far the moving board travels when it has been cut perfectly. */
-  perfectShift: number;
-}
-
-interface Bump {
-  x: number;
-  height: number;
-  width: number;
 }
 
 interface LevelSpec {
   name: string;
-  baseline: number;
-  wobble: readonly [amplitude: number, frequency: number, phase: number][];
-  bumps: readonly Bump[];
-  solution: readonly [Pair, Pair][];
-  maxCuts: number;
-  thresholds: readonly [number, number, number];
+  /** Angle of the cabinet corner, in degrees. 90 is a square corner. */
+  cornerAngle: number;
+  /** Direction of the second wall, in degrees (0 points right). */
+  rotation: number;
+  widths: [number, number];
+  corner: Pair;
 }
 
-export const WORLD_WIDTH = 720;
-export const WORLD_HEIGHT = 1280;
+const BOARD_LENGTH = 1100;
+/** How far each board runs past the point where the outer edges cross. */
+const OVERHANG = 45;
+const DEG = Math.PI / 180;
 
-const X0 = 60;
-const X1 = 660;
-const FIXED_TOP = 150;
-const MOVING_BOTTOM = 1060;
-/** How far the moving board travels when it has been cut perfectly. */
-const PERFECT_SHIFT = 270;
-const EDGE_SAMPLES = 160;
+const add = (a: Pair, b: Pair, k = 1): Pair => [a[0] + b[0] * k, a[1] + b[1] * k];
+/** Clears float noise such as cos(90°) = 6e-17 so straight edges stay exactly straight. */
+const tidy = (p: Pair): Pair => [Math.round(p[0] * 1000) / 1000, Math.round(p[1] * 1000) / 1000];
+const dot = (a: Pair, b: Pair) => a[0] * b[0] + a[1] * b[1];
 
-function buildLevel(spec: LevelSpec): Level {
-  const surface = (x: number) => {
-    let y = spec.baseline;
-    for (const [a, f, p] of spec.wobble) y += a * Math.sin(f * x + p);
-    for (const b of spec.bumps) y -= b.height * Math.exp(-((x - b.x) ** 2) / (2 * b.width ** 2));
-    return y;
-  };
+/** Where the lines p + s·u and q + r·v cross. */
+function intersect(p: Pair, u: Pair, q: Pair, v: Pair): Pair {
+  const det = u[0] * v[1] - u[1] * v[0];
+  const s = ((q[0] - p[0]) * v[1] - (q[1] - p[1]) * v[0]) / det;
+  return add(p, u, s);
+}
 
-  // The edge the moving board would have after the solution cuts.
-  const solved = (x: number) => {
-    let y = surface(x);
-    for (const [a, b] of spec.solution) {
-      const lo = Math.min(a[0], b[0]);
-      const hi = Math.max(a[0], b[0]);
-      if (x < lo || x > hi) continue;
-      const cy = a[1] + ((x - a[0]) / (b[0] - a[0])) * (b[1] - a[1]);
-      y = Math.max(y, cy);
-    }
-    return y;
-  };
+export function buildLevel(spec: LevelSpec): Level {
+  const c = spec.corner;
+  const a2 = spec.rotation * DEG;
+  // Screen y points down, so turning "up" from wall 2 means subtracting the angle.
+  const a1 = a2 - spec.cornerAngle * DEG;
+  const u: [Pair, Pair] = [
+    [Math.cos(a1), Math.sin(a1)],
+    [Math.cos(a2), Math.sin(a2)],
+  ];
+  // Each board sits on the outside of its wall, away from the cabinet.
+  const n = u.map((ui, i) => {
+    const other = u[1 - i];
+    const perp: Pair = [-ui[1], ui[0]];
+    return dot(perp, other) < 0 ? perp : ([ui[1], -ui[0]] as Pair);
+  }) as [Pair, Pair];
 
-  const xs: number[] = [];
-  for (let i = 0; i <= EDGE_SAMPLES; i++) xs.push(X0 + (i / EDGE_SAMPLES) * (X1 - X0));
-  // Add the cut end points so the fixed board's corners land exactly on the solution lines.
-  for (const [a, b] of spec.solution) {
-    for (const p of [a, b]) if (p[0] > X0 && p[0] < X1) xs.push(p[0]);
-  }
-  xs.sort((a, b) => a - b);
+  const outer = tidy(intersect(add(c, n[0], spec.widths[0]), u[0], add(c, n[1], spec.widths[1]), u[1]));
 
-  const movingRing: Ring = xs.map((x) => [x, surface(x)] as Pair);
-  movingRing.push([X1, MOVING_BOTTOM], [X0, MOVING_BOTTOM], movingRing[0]);
+  const boards = [0, 1].map((i) => {
+    const w = spec.widths[i];
+    const start = Math.min(0, dot([outer[0] - c[0], outer[1] - c[1]], u[i])) - OVERHANG;
+    const p0 = add(c, u[i], start);
+    const p1 = add(c, u[i], BOARD_LENGTH);
+    const ring: Pair[] = [p0, p1, add(p1, n[i], w), add(p0, n[i], w), p0].map(tidy);
+    return {
+      shape: [ring],
+      anchor: add(add(c, u[i], BOARD_LENGTH - 30), n[i], w / 2),
+      along: u[i],
+      width: w,
+    };
+  }) as [Board, Board];
 
-  const fixedEdge = xs.map((x) => [x, solved(x) - PERFECT_SHIFT] as Pair).reverse();
-  const fixedRing: Ring = [[X0, FIXED_TOP], [X1, FIXED_TOP], ...fixedEdge, [X0, FIXED_TOP]];
+  const far = 3000;
+  const cabinet: Polygon = [[c, add(c, u[0], far), add(add(c, u[0], far), u[1], far), add(c, u[1], far), c]];
 
   return {
     name: spec.name,
-    fixed: [fixedRing],
-    moving: [movingRing],
-    anchor: [(X0 + X1) / 2, MOVING_BOTTOM - 20],
-    x0: X0,
-    x1: X1,
-    maxCuts: spec.maxCuts,
-    thresholds: spec.thresholds,
-    solution: spec.solution,
-    perfectShift: PERFECT_SHIFT,
+    boards,
+    cabinet,
+    innerCorner: c,
+    outerCorner: outer,
+    maxCuts: 3,
+    thresholds: [0.35, 1.2, 3],
   };
 }
 
-export const LEVEL_1: Level = buildLevel({
-  name: 'Bölüm 1',
-  baseline: 720,
-  wobble: [
-    [7, 0.029, 0],
-    [5, 0.083, 1.3],
-    [3, 0.21, 0.4],
-  ],
-  bumps: [
-    { x: 200, height: 80, width: 38 },
-    { x: 470, height: 120, width: 50 },
-  ],
-  solution: [
-    [[120, 690], [290, 650]],
-    [[350, 690], [540, 600]],
-    [[400, 595], [590, 695]],
-  ],
-  maxCuts: 4,
-  thresholds: [90, 60, 25],
-});
+export const LEVELS: Level[] = [
+  buildLevel({ name: 'Dik köşe', cornerAngle: 90, rotation: 0, widths: [80, 80], corner: [560, 470] }),
+  buildLevel({ name: 'Geniş köşe', cornerAngle: 118, rotation: 0, widths: [80, 80], corner: [620, 470] }),
+  buildLevel({ name: 'Farklı genişlikler', cornerAngle: 100, rotation: -6, widths: [100, 64], corner: [600, 480] }),
+  buildLevel({ name: 'Dar köşe', cornerAngle: 74, rotation: 4, widths: [70, 92], corner: [520, 470] }),
+];

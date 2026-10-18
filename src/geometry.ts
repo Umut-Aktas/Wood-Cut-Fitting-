@@ -33,7 +33,7 @@ export function cutPolygon(poly: Polygon, a: Pair, b: Pair, anchor: Pair): CutRe
     [a[0] - nx, a[1] - ny],
   ];
 
-  const pieces = polygonClipping.difference(poly, [blade]);
+  const pieces = polygonClipping.difference(snapPolygon(poly), snapPolygon([blade]));
   if (pieces.length < 2) return null;
 
   let keptIndex = pieces.findIndex((p) => pointInPolygon(anchor, p));
@@ -47,6 +47,12 @@ export function cutPolygon(poly: Polygon, a: Pair, b: Pair, anchor: Pair): CutRe
     kept: pieces[keptIndex],
     removed: pieces.filter((_, i) => i !== keptIndex),
   };
+}
+
+/** polygon-clipping can fail on float noise like 480.0000000000001, so snap inputs to a fine grid. */
+const GRID = 1e-4;
+export function snapPolygon(poly: Polygon): Polygon {
+  return poly.map((ring) => ring.map(([x, y]) => [Math.round(x / GRID) * GRID, Math.round(y / GRID) * GRID] as Pair));
 }
 
 export function pointInRing(p: Pair, ring: Ring): boolean {
@@ -94,23 +100,72 @@ export function polygonCentroid(poly: Polygon): Pair {
   return [cx / (3 * a), cy / (3 * a)];
 }
 
-/** Highest and lowest y where the vertical line at `x` meets the polygon's outline. */
-export function verticalSpan(poly: Polygon, x: number): { min: number; max: number } | null {
-  let min = Infinity;
-  let max = -Infinity;
-  for (const ring of poly) {
-    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
-      const [x1, y1] = ring[j];
-      const [x2, y2] = ring[i];
-      if (x1 > x === x2 > x) continue;
-      const y = y1 + ((x - x1) / (x2 - x1)) * (y2 - y1);
-      if (y < min) min = y;
-      if (y > max) max = y;
-    }
-  }
-  return min <= max ? { min, max } : null;
-}
-
 export function translatePolygon(poly: Polygon, dx: number, dy: number): Polygon {
   return poly.map((ring) => ring.map(([x, y]) => [x + dx, y + dy] as Pair));
 }
+
+const FAR = 5000;
+
+/**
+ * Saws along the whole line through a and b, so the player only has to draw
+ * part of the cut. Returns null when the line misses the board.
+ */
+export function lineCut(poly: Polygon, a: Pair, b: Pair, anchor: Pair): CutResult | null {
+  const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+  if (len < 1e-6) return null;
+  const ux = (b[0] - a[0]) / len;
+  const uy = (b[1] - a[1]) / len;
+  // Reach just past the board in both directions; a much longer blade costs precision.
+  let reach = 0;
+  for (const [x, y] of poly[0]) reach = Math.max(reach, Math.hypot(x - a[0], y - a[1]), Math.hypot(x - b[0], y - b[1]));
+  reach += 10;
+  return cutPolygon(poly, [a[0] - ux * reach, a[1] - uy * reach], [b[0] + ux * reach, b[1] + uy * reach], anchor);
+}
+
+function segmentsCross(p1: Pair, p2: Pair, q1: Pair, q2: Pair): boolean {
+  const d = (a: Pair, b: Pair, c: Pair) => (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+  const d1 = d(q1, q2, p1);
+  const d2 = d(q1, q2, p2);
+  const d3 = d(p1, p2, q1);
+  const d4 = d(p1, p2, q2);
+  return d1 > 0 !== d2 > 0 && d3 > 0 !== d4 > 0;
+}
+
+/** True when the drawn segment a→b touches the board anywhere. */
+export function segmentTouches(poly: Polygon, a: Pair, b: Pair): boolean {
+  if (pointInPolygon(a, poly) || pointInPolygon(b, poly)) return true;
+  for (const ring of poly) {
+    for (let i = 1; i < ring.length; i++) if (segmentsCross(a, b, ring[i - 1], ring[i])) return true;
+  }
+  return false;
+}
+
+/** The part of `poly` on the same side of the line a→b as `keep`, cut without any kerf. */
+export function clipToSide(poly: Polygon, a: Pair, b: Pair, keep: Pair): Polygon[] {
+  const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+  const ux = (b[0] - a[0]) / len;
+  const uy = (b[1] - a[1]) / len;
+  const side = Math.sign(ux * (keep[1] - a[1]) - uy * (keep[0] - a[0]));
+  const nx = -uy * side * FAR;
+  const ny = ux * side * FAR;
+  const p: Pair = [a[0] - ux * FAR, a[1] - uy * FAR];
+  const q: Pair = [a[0] + ux * FAR, a[1] + uy * FAR];
+  const half: Ring = [p, q, [q[0] + nx, q[1] + ny], [p[0] + nx, p[1] + ny], p];
+  return polygonClipping.intersection(poly, [half]);
+}
+
+export function circlePolygon(c: Pair, r: number, sides = 72): Polygon {
+  const ring: Ring = [];
+  for (let i = 0; i < sides; i++) {
+    const t = (i / sides) * Math.PI * 2;
+    ring.push([c[0] + r * Math.cos(t), c[1] + r * Math.sin(t)]);
+  }
+  ring.push(ring[0]);
+  return [ring];
+}
+
+export function multiArea(polys: Polygon[]): number {
+  return polys.reduce((s, p) => s + polygonArea(p), 0);
+}
+
+export { polygonClipping };

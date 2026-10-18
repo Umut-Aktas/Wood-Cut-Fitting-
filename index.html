@@ -2,7 +2,7 @@
 <html lang="tr">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="theme-color" content="#2a1f17" />
     <title>Wood Cut Fitting</title>
     <link rel="stylesheet" href="./src/style.css" />
@@ -12,7 +12,7 @@
     <header class="hud hud-top">
       <div>
         <div id="title" class="title"></div>
-        <div class="help">Alttaki tahtayı parmağınla kes, sonra Birleştir'e bas.</div>
+        <div class="help">İki tahta köşede üst üste duruyor. Bir çizgi çiz: üzerinden geçtiği tahtaları boydan boya keser. Köşe tam otursun diye kes, sonra Birleştir'e bas.</div>
       </div>
       <div id="cuts" class="pill"></div>
     </header>
@@ -26,7 +26,10 @@
       <div class="card">
         <div id="stars" class="stars"></div>
         <div id="fit-text" class="fit-text"></div>
-        <button id="retry" class="primary">Tekrar dene</button>
+        <div class="actions">
+          <button id="retry">Tekrar dene</button>
+          <button id="next" class="primary">Sonraki bölüm</button>
+        </div>
       </div>
     </div>
     <script type="module" src="./src/main.ts"></script>
