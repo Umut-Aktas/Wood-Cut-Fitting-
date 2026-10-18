@@ -1,0 +1,30 @@
+{
+  "name": "wood-cut-fitting",
+  "version": "0.1.0",
+  "description": "Uymayan tahtaları kesip tam oturtma üzerine bir mobil bulmaca oyunu.",
+  "scripts": {
+    "dev": "vite --host",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --host",
+    "test": "vitest run"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Umut-Aktas/wood-cut-fitting-.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Umut-Aktas/wood-cut-fitting-/issues"
+  },
+  "homepage": "https://github.com/Umut-Aktas/wood-cut-fitting-#readme",
+  "dependencies": {
+    "pixi.js": "^8.22.0",
+    "polygon-clipping": "^0.15.7"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "vite": "^8.3.4",
+    "vitest": "^5.0.5"
+  },
+  "private": true,
+  "type": "module"
+}

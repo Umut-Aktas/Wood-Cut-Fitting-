@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="tr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+    <meta name="theme-color" content="#2a1f17" />
+    <title>Wood Cut Fitting</title>
+    <link rel="stylesheet" href="./src/style.css" />
+  </head>
+  <body>
+    <div id="app"></div>
+    <header class="hud hud-top">
+      <div>
+        <div id="title" class="title"></div>
+        <div class="help">Alttaki tahtayı parmağınla kes, sonra Birleştir'e bas.</div>
+      </div>
+      <div id="cuts" class="pill"></div>
+    </header>
+    <div id="toast" class="toast" role="status"></div>
+    <footer class="hud hud-bottom">
+      <button id="undo">Geri al</button>
+      <button id="hint">İpucu</button>
+      <button id="join" class="primary">Birleştir</button>
+    </footer>
+    <div id="result" class="result" hidden>
+      <div class="card">
+        <div id="stars" class="stars"></div>
+        <div id="fit-text" class="fit-text"></div>
+        <button id="retry" class="primary">Tekrar dene</button>
+      </div>
+    </div>
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>
