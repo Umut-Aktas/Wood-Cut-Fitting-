@@ -181,3 +181,39 @@ button:disabled {
   gap: 10px;
   justify-content: center;
 }
+
+.levels {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.levels .lvl {
+  min-width: 0;
+  padding: 5px 11px;
+  font-size: 14px;
+  border-radius: 10px;
+}
+
+.levels .lvl.active {
+  background: #e0902f;
+  border-color: #e0902f;
+  color: #2a1f17;
+}
+
+.levels .lvl.special {
+  border-style: dashed;
+}
+
+.levels .lvl.special.active {
+  border-style: solid;
+}
+
+.levels .sep {
+  width: 1px;
+  height: 22px;
+  margin: 0 6px;
+  background: rgba(255, 255, 255, 0.25);
+}

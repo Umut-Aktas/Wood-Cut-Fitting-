@@ -1,6 +1,6 @@
 import { Application } from 'pixi.js';
 import { Game, type GameUi } from './game';
-import { LEVELS } from './level';
+import { LEVELS, SPECIAL_LEVEL } from './level';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -26,6 +26,8 @@ const ui: GameUi = {
   fitText: $('fit-text'),
   retry: $('retry'),
   next: $('next'),
+  levelPicker: $('levels'),
+  help: $('help'),
 };
 
-new Game(app, LEVELS, ui);
+new Game(app, [...LEVELS, SPECIAL_LEVEL], ui);

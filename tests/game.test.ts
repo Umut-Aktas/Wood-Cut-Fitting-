@@ -1,7 +1,17 @@
 import { describe, expect, it } from 'vitest';
-import { cutPolygon, lineCut, polygonArea, segmentTouches, type Pair, type Polygon } from '../src/geometry';
+import {
+  cutPolygon,
+  lineCut,
+  multiArea,
+  polygonArea,
+  polygonClipping,
+  segmentTouches,
+  translatePolygon,
+  type Pair,
+  type Polygon,
+} from '../src/geometry';
 import { measureJoint } from '../src/fit';
-import { LEVELS, type Level } from '../src/level';
+import { LEVELS, SPECIAL_LEVEL, type Level } from '../src/level';
 
 const square: Polygon = [[[0, 0], [100, 0], [100, 100], [0, 100], [0, 0]]];
 
@@ -38,7 +48,7 @@ function shifted(level: Level, d: number): [Pair, Pair] {
   return [[c[0] + nx, c[1] + ny], [o[0] + nx, o[1] + ny]];
 }
 
-describe.each(LEVELS.map((l) => [l.name, l] as const))('%s', (_, level) => {
+describe.each([...LEVELS, SPECIAL_LEVEL].map((l) => [l.name, l] as const))('%s', (_, level) => {
   it('one cut from the inner to the outer corner earns three stars', () => {
     const r = measureJoint(level, cutBoth(level, level.innerCorner, level.outerCorner));
     expect(r.stars).toBe(3);
@@ -60,5 +70,33 @@ describe.each(LEVELS.map((l) => [l.name, l] as const))('%s', (_, level) => {
   it('pushing the boards together without cutting earns nothing', () => {
     const r = measureJoint(level, [level.boards[0].shape, level.boards[1].shape]);
     expect(r.stars).toBe(0);
+  });
+});
+
+describe('boards that start apart', () => {
+  const level = SPECIAL_LEVEL;
+  const at = (distances: [number, number]) =>
+    level.boards.map((b, i) => translatePolygon(b.shape, b.along[0] * distances[i], b.along[1] * distances[i]));
+  const overlap = (distances: [number, number]) => {
+    const [a, b] = at(distances);
+    return multiArea(polygonClipping.intersection(a, b));
+  };
+
+  it('bump into each other at the contact point', () => {
+    const [c0, c1] = level.contact!;
+    expect(overlap([c0, c1])).toBeLessThan(0.5);
+    expect(overlap([c0 - 5, c1 - 5])).toBeGreaterThan(10);
+  });
+
+  it('rest with a gap between them', () => {
+    expect(overlap(level.rest)).toBe(0);
+    expect(level.rest[0]).toBeGreaterThan(level.contact![0]);
+  });
+
+  it('the overlapping levels start at home', () => {
+    for (const l of LEVELS) {
+      expect(l.rest).toEqual([0, 0]);
+      expect(l.contact).toBeNull();
+    }
   });
 });

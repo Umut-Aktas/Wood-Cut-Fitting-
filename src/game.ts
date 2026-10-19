@@ -1,5 +1,5 @@
 import { Application, Container, FederatedPointerEvent, Graphics, type Texture } from 'pixi.js';
-import { lineCut, polygonCentroid, segmentTouches, type Pair, type Polygon } from './geometry';
+import { lineCut, polygonCentroid, segmentTouches, translatePolygon, type Pair, type Polygon } from './geometry';
 import { measureJoint, slideOffset, type JointResult } from './fit';
 import { WORLD_HEIGHT, WORLD_WIDTH, type Level } from './level';
 import { BoardView, makeWoodTexture } from './wood';
@@ -16,9 +16,11 @@ export interface GameUi {
   fitText: HTMLElement;
   retry: HTMLButtonElement;
   next: HTMLButtonElement;
+  levelPicker: HTMLElement;
+  help: HTMLElement;
 }
 
-type Phase = 'cutting' | 'sliding' | 'result';
+type Phase = 'intro' | 'cutting' | 'sliding' | 'result';
 type Pieces = [Polygon, Polygon];
 
 interface FallingPiece {
@@ -34,6 +36,26 @@ const SLIDE_SECONDS = 0.5;
 const GRAVITY = 2600;
 const FALL_SECONDS = 1.4;
 const EDGE_COLOR = 0x5a3a1a;
+/**
+ * The opening of a level whose boards start apart: distance beyond the point
+ * where they first bump, at each moment. They slide in, knock, bounce, knock
+ * again, then back off to where the player cuts them. The last key is replaced
+ * by the board's resting distance.
+ */
+const INTRO_KEYS: readonly [seconds: number, beyondContact: number][] = [
+  [0, 420],
+  [0.9, 0],
+  [1.05, 34],
+  [1.2, 0],
+  [1.33, 14],
+  [1.45, 0],
+  [1.95, 0],
+  [2.5, NaN],
+];
+const INTRO_BUMP_AT = 0.9;
+
+const sub = (a: Pair, b: Pair): Pair => [a[0] - b[0], a[1] - b[1]];
+
 /** How much of the world is in view around the joint. */
 const VIEW_WIDTH = 900;
 const VIEW_HEIGHT = 620;
@@ -58,6 +80,7 @@ export class Game {
   private falling: FallingPiece[] = [];
   private dragStart: Pair | null = null;
   private slideTime = 0;
+  private introTime = 0;
   private joint: JointResult | null = null;
   private toastTimer = 0;
   private resultTimer = 0;
@@ -93,17 +116,52 @@ export class Game {
     ui.hint.onclick = () => this.toggleHint();
     ui.join.onclick = () => this.join();
     ui.retry.onclick = () => this.loadLevel(this.levelIndex);
-    ui.next.onclick = () => this.loadLevel((this.levelIndex + 1) % this.levels.length);
+    ui.next.onclick = () => this.loadLevel(this.nextLevelIndex());
+    this.buildLevelPicker();
 
     app.ticker.add((t) => this.update(t.deltaMS / 1000));
     window.addEventListener('resize', () => this.layout());
     this.loadLevel(0);
   }
 
+  /** Numbered levels first, then the hand-made ones, set apart. */
+  private buildLevelPicker() {
+    const picker = this.ui.levelPicker;
+    picker.innerHTML = '';
+    let number = 0;
+    this.levels.forEach((level, i) => {
+      if (level.special && !picker.querySelector('.sep')) {
+        picker.append(Object.assign(document.createElement('span'), { className: 'sep' }));
+      }
+      const button = document.createElement('button');
+      button.className = level.special ? 'lvl special' : 'lvl';
+      button.textContent = level.special ? `Özel: ${level.name}` : String(++number);
+      button.onclick = () => this.loadLevel(i);
+      picker.append(button);
+    });
+  }
+
+  private nextLevelIndex() {
+    const regular = this.levels.map((l, i) => (l.special ? -1 : i)).filter((i) => i >= 0);
+    const at = regular.indexOf(this.levelIndex);
+    return regular[(at + 1) % regular.length];
+  }
+
+  /** Where board `i` sits when it is `distance` out from its home position along its wall. */
+  private offsetAt(i: number, distance: number): Pair {
+    const u = this.level.boards[i].along;
+    return [u[0] * distance, u[1] * distance];
+  }
+
+  private restOffset(i: number): Pair {
+    return this.offsetAt(i, this.level.rest[i]);
+  }
+
   private loadLevel(index: number) {
     this.levelIndex = index;
     this.level = this.levels[index];
-    this.phase = 'cutting';
+    this.phase = this.level.contact ? 'intro' : 'cutting';
+    this.introTime = 0;
     this.history = [];
     this.joint = null;
     clearTimeout(this.resultTimer);
@@ -113,6 +171,7 @@ export class Game {
     this.views = this.level.boards.map((b, i) => {
       const view = new BoardView(this.textures[i], b.shape, EDGE_COLOR, Math.atan2(b.along[1], b.along[0]), this.outlineLayer);
       this.boardLayer.addChild(view);
+      view.setOffset(...this.restOffset(i));
       return view;
     });
 
@@ -122,7 +181,15 @@ export class Game {
     this.hintLayer.visible = false;
     this.ui.hint.classList.remove('active');
     this.ui.result.hidden = true;
-    this.ui.title.textContent = `Bölüm ${index + 1}/${this.levels.length} · ${this.level.name}`;
+    const regularCount = this.levels.filter((l) => !l.special).length;
+    this.ui.title.textContent = this.level.special
+      ? `Özel bölüm · ${this.level.name}`
+      : `Bölüm ${index + 1}/${regularCount} · ${this.level.name}`;
+    this.ui.help.textContent = this.level.contact
+      ? 'Tahtalar köşeye sığmıyor. Her tahtayı ayrı ayrı kes ki köşede tam buluşsunlar, sonra Birleştir\'e bas.'
+      : 'İki tahta köşede üst üste duruyor. Bir çizgi çiz: üzerinden geçtiği tahtaları boydan boya keser. Köşe tam otursun diye kes, sonra Birleştir\'e bas.';
+    this.ui.levelPicker.querySelectorAll('button').forEach((b, i) => b.classList.toggle('active', i === index));
+    if (this.level.contact) this.update(0);
     this.layout();
     this.refreshHud();
   }
@@ -133,8 +200,12 @@ export class Game {
     const { width, height } = this.app.screen;
     const scale = Math.min(width / VIEW_WIDTH, height / VIEW_HEIGHT);
     const { innerCorner: c, outerCorner: o } = this.level;
+    // When the boards wait apart, centre between the joint and where they rest.
+    const [r0, r1] = [this.restOffset(0), this.restOffset(1)];
+    const cx = (c[0] + o[0]) / 2 + (r0[0] + r1[0]) / 4;
+    const cy = (c[1] + o[1]) / 2 + (r0[1] + r1[1]) / 4;
     this.world.scale.set(scale);
-    this.world.position.set(width / 2 - ((c[0] + o[0]) / 2) * scale, height * 0.55 - ((c[1] + o[1]) / 2) * scale);
+    this.world.position.set(width / 2 - cx * scale, height * 0.55 - cy * scale);
   }
 
   private toWorld(e: FederatedPointerEvent): Pair {
@@ -142,8 +213,12 @@ export class Game {
     return [p.x, p.y];
   }
 
+  /** Boards are cut in their home position, so strokes are moved back by each board's resting offset. */
   private touchedBoards(a: Pair, b: Pair): number[] {
-    return [0, 1].filter((i) => segmentTouches(this.pieces[i], a, b));
+    return [0, 1].filter((i) => {
+      const off = this.restOffset(i);
+      return segmentTouches(this.pieces[i], sub(a, off), sub(b, off));
+    });
   }
 
   private readonly onDown = (e: FederatedPointerEvent) => {
@@ -189,7 +264,8 @@ export class Game {
     const next: Pieces = [...this.pieces];
     let cutAny = false;
     for (const i of this.touchedBoards(a, b)) {
-      const result = lineCut(this.pieces[i], a, b, this.level.boards[i].anchor);
+      const off = this.restOffset(i);
+      const result = lineCut(this.pieces[i], sub(a, off), sub(b, off), this.level.boards[i].anchor);
       if (!result) continue;
       cutAny = true;
       next[i] = result.kept;
@@ -215,6 +291,7 @@ export class Game {
 
   private dropPiece(poly: Polygon, board: number) {
     const b = this.level.boards[board];
+    poly = translatePolygon(poly, ...this.restOffset(board));
     const view = new BoardView(this.textures[board], poly, EDGE_COLOR, Math.atan2(b.along[1], b.along[0]));
     const [cx, cy] = polygonCentroid(poly);
     view.pivot.set(cx, cy);
@@ -243,19 +320,26 @@ export class Game {
     this.ui.hint.classList.toggle('active', this.hintLayer.visible);
   }
 
-  /** Marks the two points where the boards' edges cross: the cut runs through both. */
+  /**
+   * Marks the perfect cut: the line between the points where the boards' edges
+   * cross. Boards waiting apart get the line on each board where it will fall.
+   */
   private drawHint() {
-    const { innerCorner: c, outerCorner: o } = this.level;
     const g = this.hintLayer.clear();
-    const len = Math.hypot(o[0] - c[0], o[1] - c[1]);
     const dash = 8;
-    for (let t = 0; t < len; t += dash * 2) {
-      const t2 = Math.min(len, t + dash);
-      g.moveTo(c[0] + ((o[0] - c[0]) * t) / len, c[1] + ((o[1] - c[1]) * t) / len);
-      g.lineTo(c[0] + ((o[0] - c[0]) * t2) / len, c[1] + ((o[1] - c[1]) * t2) / len);
+    const offsets = this.level.contact ? [this.restOffset(0), this.restOffset(1)] : [[0, 0] as Pair];
+    for (const off of offsets) {
+      const c: Pair = [this.level.innerCorner[0] + off[0], this.level.innerCorner[1] + off[1]];
+      const o: Pair = [this.level.outerCorner[0] + off[0], this.level.outerCorner[1] + off[1]];
+      const len = Math.hypot(o[0] - c[0], o[1] - c[1]);
+      for (let t = 0; t < len; t += dash * 2) {
+        const t2 = Math.min(len, t + dash);
+        g.moveTo(c[0] + ((o[0] - c[0]) * t) / len, c[1] + ((o[1] - c[1]) * t) / len);
+        g.lineTo(c[0] + ((o[0] - c[0]) * t2) / len, c[1] + ((o[1] - c[1]) * t2) / len);
+      }
+      g.stroke({ width: 2.5, color: 0xffffff, alpha: 0.85 });
+      for (const p of [c, o]) g.circle(p[0], p[1], 8).stroke({ width: 3, color: 0xffffff });
     }
-    g.stroke({ width: 2.5, color: 0xffffff, alpha: 0.85 });
-    for (const p of [c, o]) g.circle(p[0], p[1], 8).stroke({ width: 3, color: 0xffffff });
   }
 
   private join() {
@@ -328,9 +412,43 @@ export class Game {
       this.slideTime += dt;
       const t = Math.min(1, this.slideTime / SLIDE_SECONDS);
       // Ease in, so the boards pick up speed and meet with a knock.
-      const slide = this.joint.slide * t * t;
-      this.views.forEach((v, i) => v.setOffset(...slideOffset(this.level, i, slide)));
+      const k = t * t;
+      this.views.forEach((v, i) => {
+        const from = this.restOffset(i);
+        const to = slideOffset(this.level, i, this.joint!.slide);
+        v.setOffset(from[0] + (to[0] - from[0]) * k, from[1] + (to[1] - from[1]) * k);
+      });
       if (t >= 1) this.finishSlide();
+    }
+
+    if (this.phase === 'intro') this.playIntro(dt);
+  }
+
+  private playIntro(dt: number) {
+    const contact = this.level.contact!;
+    const before = this.introTime;
+    this.introTime += dt;
+    const time = this.introTime;
+    if (before < INTRO_BUMP_AT && time >= INTRO_BUMP_AT) {
+      this.showToast('Sığmıyor! Tahtaları keserek köşeye oturt.');
+    }
+    const end = INTRO_KEYS[INTRO_KEYS.length - 1][0];
+    this.views.forEach((v, i) => {
+      const beyond = (k: number) => (Number.isNaN(INTRO_KEYS[k][1]) ? this.level.rest[i] - contact[i] : INTRO_KEYS[k][1]);
+      let k = 1;
+      while (k < INTRO_KEYS.length - 1 && time > INTRO_KEYS[k][0]) k++;
+      const [t0] = INTRO_KEYS[k - 1];
+      const [t1] = INTRO_KEYS[k];
+      const f = Math.min(1, Math.max(0, (time - t0) / (t1 - t0)));
+      // The first approach speeds up into the knock; the rest move smoothly.
+      const e = k === 1 ? f * f : f * f * (3 - 2 * f);
+      const d = beyond(k - 1) + (beyond(k) - beyond(k - 1)) * e;
+      v.setOffset(...this.offsetAt(i, contact[i] + d));
+    });
+    if (time >= end) {
+      this.phase = 'cutting';
+      this.views.forEach((v, i) => v.setOffset(...this.restOffset(i)));
+      this.refreshHud();
     }
   }
 }
