@@ -217,3 +217,22 @@ button:disabled {
   margin: 0 6px;
   background: rgba(255, 255, 255, 0.25);
 }
+
+.modes {
+  display: flex;
+  border-radius: 14px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  margin-right: 12px;
+}
+
+.modes .mode {
+  border: 0;
+  border-radius: 0;
+  min-width: 84px;
+}
+
+.modes .mode.active {
+  background: #f6ead8;
+  color: #2a1f17;
+}

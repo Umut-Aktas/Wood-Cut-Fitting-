@@ -1,5 +1,13 @@
 import { Application, Container, FederatedPointerEvent, Graphics, type Texture } from 'pixi.js';
-import { lineCut, polygonCentroid, segmentTouches, translatePolygon, type Pair, type Polygon } from './geometry';
+import {
+  lineCut,
+  pointInPolygon,
+  polygonCentroid,
+  segmentTouches,
+  translatePolygon,
+  type Pair,
+  type Polygon,
+} from './geometry';
 import { measureJoint, slideOffset, type JointResult } from './fit';
 import { WORLD_HEIGHT, WORLD_WIDTH, type Level } from './level';
 import { BoardView, makeWoodTexture } from './wood';
@@ -18,7 +26,12 @@ export interface GameUi {
   next: HTMLButtonElement;
   levelPicker: HTMLElement;
   help: HTMLElement;
+  modeCut: HTMLButtonElement;
+  modeSlide: HTMLButtonElement;
 }
+
+/** What dragging on the table does: saw a cut, or slide a board along its wall. */
+type Mode = 'cut' | 'slide';
 
 type Phase = 'intro' | 'cutting' | 'sliding' | 'result';
 type Pieces = [Polygon, Polygon];
@@ -55,6 +68,8 @@ const INTRO_KEYS: readonly [seconds: number, beyondContact: number][] = [
 const INTRO_BUMP_AT = 0.9;
 
 const sub = (a: Pair, b: Pair): Pair => [a[0] - b[0], a[1] - b[1]];
+/** How far past its resting spot a board can be pulled back. */
+const SLIDE_BACK = 250;
 
 /** How much of the world is in view around the joint. */
 const VIEW_WIDTH = 900;
@@ -79,6 +94,10 @@ export class Game {
   private history: Pieces[] = [];
   private falling: FallingPiece[] = [];
   private dragStart: Pair | null = null;
+  private mode: Mode = 'cut';
+  /** How far out from its home position each board is right now, along its wall. */
+  private distance: [number, number] = [0, 0];
+  private sliding: { board: number; from: Pair; startDistance: number } | null = null;
   private slideTime = 0;
   private introTime = 0;
   private joint: JointResult | null = null;
@@ -108,6 +127,7 @@ export class Game {
     app.stage.eventMode = 'static';
     app.stage.hitArea = app.screen;
     app.stage.on('pointerdown', this.onDown);
+    app.canvas.addEventListener('contextmenu', (e) => e.preventDefault());
     app.stage.on('globalpointermove', this.onMove);
     app.stage.on('pointerup', this.onUp);
     app.stage.on('pointerupoutside', this.onUp);
@@ -117,7 +137,10 @@ export class Game {
     ui.join.onclick = () => this.join();
     ui.retry.onclick = () => this.loadLevel(this.levelIndex);
     ui.next.onclick = () => this.loadLevel(this.nextLevelIndex());
+    ui.modeCut.onclick = () => this.setMode('cut');
+    ui.modeSlide.onclick = () => this.setMode('slide');
     this.buildLevelPicker();
+    this.setMode('cut');
 
     app.ticker.add((t) => this.update(t.deltaMS / 1000));
     window.addEventListener('resize', () => this.layout());
@@ -157,11 +180,24 @@ export class Game {
     return this.offsetAt(i, this.level.rest[i]);
   }
 
+  private currentOffset(i: number): Pair {
+    return this.offsetAt(i, this.distance[i]);
+  }
+
+  private setMode(mode: Mode) {
+    this.mode = mode;
+    this.ui.modeCut.classList.toggle('active', mode === 'cut');
+    this.ui.modeSlide.classList.toggle('active', mode === 'slide');
+    this.app.canvas.style.cursor = mode === 'slide' ? 'grab' : 'crosshair';
+  }
+
   private loadLevel(index: number) {
     this.levelIndex = index;
     this.level = this.levels[index];
     this.phase = this.level.contact ? 'intro' : 'cutting';
     this.introTime = 0;
+    this.distance = [...this.level.rest];
+    this.sliding = null;
     this.history = [];
     this.joint = null;
     clearTimeout(this.resultTimer);
@@ -186,7 +222,7 @@ export class Game {
       ? `Özel bölüm · ${this.level.name}`
       : `Bölüm ${index + 1}/${regularCount} · ${this.level.name}`;
     this.ui.help.textContent = this.level.contact
-      ? 'Tahtalar köşeye sığmıyor. Her tahtayı ayrı ayrı kes ki köşede tam buluşsunlar, sonra Birleştir\'e bas.'
+      ? 'Tahtalar köşeye sığmıyor. Ölçmek için Kaydır ile (ya da sağ tıkla sürükleyerek) tahtaları duvar boyunca oynat, sonra kes ve Birleştir\'e bas.'
       : 'İki tahta köşede üst üste duruyor. Bir çizgi çiz: üzerinden geçtiği tahtaları boydan boya keser. Köşe tam otursun diye kes, sonra Birleştir\'e bas.';
     this.ui.levelPicker.querySelectorAll('button').forEach((b, i) => b.classList.toggle('active', i === index));
     if (this.level.contact) this.update(0);
@@ -213,20 +249,52 @@ export class Game {
     return [p.x, p.y];
   }
 
-  /** Boards are cut in their home position, so strokes are moved back by each board's resting offset. */
+  /** Boards are cut in their home position, so strokes are moved back by where each board is now. */
   private touchedBoards(a: Pair, b: Pair): number[] {
     return [0, 1].filter((i) => {
-      const off = this.restOffset(i);
+      const off = this.currentOffset(i);
       return segmentTouches(this.pieces[i], sub(a, off), sub(b, off));
     });
   }
 
   private readonly onDown = (e: FederatedPointerEvent) => {
     if (this.phase !== 'cutting') return;
-    this.dragStart = this.toWorld(e);
+    const p = this.toWorld(e);
+    // The right mouse button always slides, so cutting and measuring don't need a mode switch on desktop.
+    if (this.mode === 'slide' || e.button === 2) {
+      const board = this.boardAt(p);
+      if (board === null) return;
+      this.sliding = { board, from: p, startDistance: this.distance[board] };
+      this.app.canvas.style.cursor = 'grabbing';
+      return;
+    }
+    this.dragStart = p;
   };
 
+  /** The board under a point, the one drawn on top first. */
+  private boardAt(p: Pair): number | null {
+    for (const i of [1, 0]) {
+      if (pointInPolygon(sub(p, this.currentOffset(i)), this.pieces[i])) return i;
+    }
+    return null;
+  }
+
+  /** Slides the grabbed board along its wall, following the pointer. */
+  private slideBoard(p: Pair) {
+    const { board, from, startDistance } = this.sliding!;
+    const u = this.level.boards[board].along;
+    const moved = (p[0] - from[0]) * u[0] + (p[1] - from[1]) * u[1];
+    const max = this.level.rest[board] + SLIDE_BACK;
+    this.distance[board] = Math.min(max, Math.max(0, startDistance + moved));
+    this.views[board].setOffset(...this.currentOffset(board));
+    this.drawHint();
+  }
+
   private readonly onMove = (e: FederatedPointerEvent) => {
+    if (this.sliding) {
+      this.slideBoard(this.toWorld(e));
+      return;
+    }
     if (!this.dragStart) return;
     const a = this.dragStart;
     const b = this.toWorld(e);
@@ -251,6 +319,11 @@ export class Game {
   };
 
   private readonly onUp = (e: FederatedPointerEvent) => {
+    if (this.sliding) {
+      this.sliding = null;
+      this.setMode(this.mode);
+      return;
+    }
     if (!this.dragStart) return;
     const a = this.dragStart;
     const b = this.toWorld(e);
@@ -264,7 +337,7 @@ export class Game {
     const next: Pieces = [...this.pieces];
     let cutAny = false;
     for (const i of this.touchedBoards(a, b)) {
-      const off = this.restOffset(i);
+      const off = this.currentOffset(i);
       const result = lineCut(this.pieces[i], sub(a, off), sub(b, off), this.level.boards[i].anchor);
       if (!result) continue;
       cutAny = true;
@@ -291,7 +364,7 @@ export class Game {
 
   private dropPiece(poly: Polygon, board: number) {
     const b = this.level.boards[board];
-    poly = translatePolygon(poly, ...this.restOffset(board));
+    poly = translatePolygon(poly, ...this.currentOffset(board));
     const view = new BoardView(this.textures[board], poly, EDGE_COLOR, Math.atan2(b.along[1], b.along[0]));
     const [cx, cy] = polygonCentroid(poly);
     view.pivot.set(cx, cy);
@@ -322,13 +395,12 @@ export class Game {
 
   /**
    * Marks the perfect cut: the line between the points where the boards' edges
-   * cross. Boards waiting apart get the line on each board where it will fall.
+   * cross, drawn on each board where it falls with the board where it is now.
    */
   private drawHint() {
     const g = this.hintLayer.clear();
     const dash = 8;
-    const offsets = this.level.contact ? [this.restOffset(0), this.restOffset(1)] : [[0, 0] as Pair];
-    for (const off of offsets) {
+    for (const off of [this.currentOffset(0), this.currentOffset(1)]) {
       const c: Pair = [this.level.innerCorner[0] + off[0], this.level.innerCorner[1] + off[1]];
       const o: Pair = [this.level.outerCorner[0] + off[0], this.level.outerCorner[1] + off[1]];
       const len = Math.hypot(o[0] - c[0], o[1] - c[1]);
@@ -414,7 +486,7 @@ export class Game {
       // Ease in, so the boards pick up speed and meet with a knock.
       const k = t * t;
       this.views.forEach((v, i) => {
-        const from = this.restOffset(i);
+        const from = this.currentOffset(i);
         const to = slideOffset(this.level, i, this.joint!.slide);
         v.setOffset(from[0] + (to[0] - from[0]) * k, from[1] + (to[1] - from[1]) * k);
       });

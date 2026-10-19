@@ -28,6 +28,8 @@ const ui: GameUi = {
   next: $('next'),
   levelPicker: $('levels'),
   help: $('help'),
+  modeCut: $('mode-cut'),
+  modeSlide: $('mode-slide'),
 };
 
 new Game(app, [...LEVELS, SPECIAL_LEVEL], ui);
