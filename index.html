@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="tr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#2a1f17" />
+    <title>Wood Cut Fitting</title>
+    <link rel="stylesheet" href="./src/style.css" />
+  </head>
+  <body>
+    <div id="app"></div>
+    <header class="hud hud-top">
+      <div>
+        <div id="title" class="title"></div>
+        <nav id="levels" class="levels"></nav>
+        <div id="help" class="help"></div>
+      </div>
+      <div id="cuts" class="pill"></div>
+    </header>
+    <div id="toast" class="toast" role="status"></div>
+    <footer class="hud hud-bottom">
+      <div class="modes" role="group" aria-label="Sürükleyince">
+        <button id="mode-cut" class="mode">Kes</button>
+        <button id="mode-slide" class="mode">Kaydır</button>
+      </div>
+      <button id="undo">Geri al</button>
+      <button id="hint">İpucu</button>
+      <button id="join" class="primary">Birleştir</button>
+    </footer>
+    <div id="result" class="result" hidden>
+      <div class="card">
+        <div id="stars" class="stars"></div>
+        <div id="fit-text" class="fit-text"></div>
+        <div class="actions">
+          <button id="retry">Tekrar dene</button>
+          <button id="next" class="primary">Sonraki bölüm</button>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>
